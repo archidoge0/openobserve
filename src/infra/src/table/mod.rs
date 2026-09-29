@@ -18,11 +18,11 @@ use sea_orm_migration::MigratorTrait;
 
 use crate::{db::get_orm_client_ddl, dist_lock};
 
+pub mod ai_chat_sessions;
 pub mod alert_composites;
 pub mod alert_eval_intervals;
 pub mod alert_incidents;
 pub mod alert_states;
-pub mod ai_chat_sessions;
 pub mod alerts;
 pub mod anomaly_detection;
 pub mod backfill_jobs;
@@ -43,6 +43,7 @@ pub mod gen_ai_agents;
 pub mod incident_events;
 pub mod incident_integrations;
 pub mod kv_store;
+pub mod llm_prompts;
 pub mod llm_secrets;
 mod migration;
 pub mod model_pricing;
@@ -50,6 +51,7 @@ pub mod oncall_deliveries;
 pub mod oncall_overrides;
 pub mod oncall_ownership;
 pub mod oncall_policies;
+pub mod oncall_response_reports;
 pub mod oncall_responses;
 pub mod oncall_routing_config;
 pub mod oncall_schedules;

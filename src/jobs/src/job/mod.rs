@@ -48,13 +48,11 @@ mod incidents;
 mod leader;
 #[cfg(feature = "enterprise")]
 mod llm_experiment_cleanup;
-#[cfg(feature = "enterprise")]
 mod llm_idempotency_purge;
 #[cfg(feature = "enterprise")]
 mod llm_playground_cleanup;
 #[cfg(feature = "enterprise")]
 mod llm_review_reconciliation;
-#[cfg(feature = "enterprise")]
 mod llm_secret_cleanup;
 pub mod metrics;
 mod mmdb_downloader;
@@ -65,6 +63,8 @@ mod org_storage;
 #[cfg(feature = "enterprise")]
 pub(crate) mod pipeline;
 mod pipeline_error_cleanup;
+#[cfg(feature = "enterprise")]
+mod prompt_webhook_delivery;
 mod promql;
 mod promql_self_consume;
 mod scheduler;
@@ -565,6 +565,7 @@ pub async fn init() -> Result<(), anyhow::Error> {
     tokio::task::spawn(db::metrics::watch_prom_cluster_leader());
     tokio::task::spawn(db::system_settings::watch());
     tokio::task::spawn(db::model_pricing::watch());
+    tokio::task::spawn(openobserve_core::prompts::watch_invalidation());
     tokio::task::spawn(db::alerts::templates::watch());
     tokio::task::spawn(db::alerts::destinations::watch());
     tokio::task::spawn(db::alerts::realtime_triggers::watch());
@@ -1258,7 +1259,6 @@ pub async fn init() -> Result<(), anyhow::Error> {
     #[cfg(feature = "enterprise")]
     llm_review_reconciliation::run();
     // Replayable SDK requests are retained for 24h; reclaim the lapsed ones.
-    #[cfg(feature = "enterprise")]
     llm_idempotency_purge::run();
     // AI chat index rows whose events aged out of the chat-events stream.
     #[cfg(feature = "enterprise")]
@@ -1271,8 +1271,9 @@ pub async fn init() -> Result<(), anyhow::Error> {
     llm_playground_cleanup::run();
     // Signing-key rotation retains the outgoing key only until its bounded
     // grace period ends.
-    #[cfg(feature = "enterprise")]
     llm_secret_cleanup::run();
+    #[cfg(feature = "enterprise")]
+    prompt_webhook_delivery::run();
 
     if LOCAL_NODE.is_compactor() {
         tokio::task::spawn(file_list_dump::run());
