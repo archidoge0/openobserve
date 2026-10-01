@@ -1,0 +1,92 @@
+name: GHAV OpenObserve 3930 Playwright core
+
+on:
+  push:
+    branches:
+      - codex/ghav-openobserve3930-before
+      - codex/ghav-openobserve3930-human
+      - codex/ghav-openobserve3930-ours
+
+permissions:
+  contents: read
+
+env:
+  COLUMNS: 150
+  ZO_ROOT_USER_EMAIL: root@example.com
+  ZO_ROOT_USER_PASSWORD: 'Complexpass#123'
+  ZO_BASE_URL: http://localhost:5080
+  INGESTION_URL: http://localhost:5080
+  ORGNAME: default
+  ZO_QUICK_MODE_NUM_FIELDS: 5
+  ZO_QUICK_MODE_STRATEGY: first
+  ZO_ALLOW_USER_DEFINED_SCHEMAS: 'true'
+  ZO_INGEST_ALLOWED_UPTO: 5
+  ZO_FEATURE_QUERY_EXCLUDE_ALL: 'false'
+
+jobs:
+  ui_integration_tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        spec: [logsquickmode.spec.js, logspage.spec.js]
+    steps:
+      - name: Reclaim hosted disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
+      - name: Checkout fixed Before source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 61066675ded83c13a0c6c5d6e10025155391ff81
+          persist-credentials: false
+      - name: Verify fixed source snapshot
+        run: |
+          test "$(git rev-parse HEAD)" = '61066675ded83c13a0c6c5d6e10025155391ff81'
+          test "$(git rev-parse HEAD^{tree})" = '0e065099fe2227b30acd188867ec0433149be4f9'
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: nightly-2024-07-07
+          targets: x86_64-unknown-linux-gnu
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+      - name: Install Protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '21.12'
+      - name: Use Node 18.20.8
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 18.20.8
+      - name: Build frontend
+        run: cd web && npm ci && npm run build
+      - name: Build Rust binary
+        run: cargo build --locked --features mimalloc
+      - name: Start server
+        run: |
+          nohup target/debug/openobserve > "$RUNNER_TEMP/server.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/server.pid"
+      - name: Check server readiness
+        run: |
+          for attempt in {1..60}; do
+            if curl -fsS http://localhost:5080/web/login >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          tail -100 "$RUNNER_TEMP/server.log"
+          exit 1
+      - name: Run complete Playwright spec
+        run: |
+          cd tests/ui-testing
+          npm ci
+          npx playwright install --with-deps chromium
+          npx playwright test "./playwright-tests/${{ matrix.spec }}"
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report-${{ matrix.spec }}
+          path: tests/ui-testing/playwright-report/
+          if-no-files-found: warn
