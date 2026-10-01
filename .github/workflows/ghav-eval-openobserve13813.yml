@@ -1,0 +1,65 @@
+name: GHAV OpenObserve 13813 Rye setup
+
+on:
+  push:
+    branches:
+      - 'codex/ghav-openobserve13813-*'
+
+permissions:
+  contents: read
+
+jobs:
+  rye_environment:
+    name: DB test Rye environment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout fixed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 7f647109fcb2875bd5b158795e0ba1945610a055
+          persist-credentials: false
+          sparse-checkout: |
+            tests/db-testing
+
+      - name: Setup Python
+        id: setup-python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11.6'
+
+      - name: Record fixed input
+        shell: bash
+        run: |
+          echo "GHAV_SOURCE_SHA=$(git rev-parse HEAD)"
+          echo "GHAV_PROJECT_SHA=$(sha256sum tests/db-testing/pyproject.toml | cut -d ' ' -f1)"
+          echo "GHAV_SETUP_PYTHON_PATH=${{ steps.setup-python.outputs.python-path }}"
+          echo "GHAV_SETUP_PYTHON_VERSION=$(python --version 2>&1 | awk '{print $2}')"
+
+      - name: Setup rye
+        uses: eifinger/setup-rye@c694239a43768373e87d0103d7f547027a23f3c8
+        env:
+          RYE_TOOLCHAIN: ${{ steps.setup-python.outputs.python-path }}
+        with:
+          enable-cache: false
+          working-directory: tests/db-testing/
+          version: '0.27.0'
+
+      - name: Pin cpython
+        run: rye pin cpython@3.11.6
+        working-directory: tests/db-testing/
+
+      - name: Rye sync
+        run: rye sync
+        working-directory: tests/db-testing/
+
+      - name: Verify provisioned DB test environment
+        working-directory: tests/db-testing/
+        shell: bash
+        run: |
+          rye --version
+          echo "GHAV_RYE_VERSION=$(rye --version | awk '{print $2}')"
+          rye run python -c 'import sys, pytest, requests, psycopg2, dotenv; print("GHAV_RYE_PYTHON="+sys.version.split()[0])'
+          rye run pytest --collect-only -q
+          echo "GHAV_REQUIREMENTS_SHA=$(sha256sum requirements.lock | cut -d ' ' -f1)"
+          echo "GHAV_REQUIREMENTS_DEV_SHA=$(sha256sum requirements-dev.lock | cut -d ' ' -f1)"
