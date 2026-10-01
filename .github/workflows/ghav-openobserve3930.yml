@@ -36,6 +36,8 @@ jobs:
         with:
           ref: 61066675ded83c13a0c6c5d6e10025155391ff81
           persist-credentials: false
+      - name: Trust checkout path for Git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Verify fixed source snapshot
         run: |
           test "$(git rev-parse HEAD)" = '61066675ded83c13a0c6c5d6e10025155391ff81'
@@ -85,6 +87,8 @@ jobs:
         with:
           ref: 61066675ded83c13a0c6c5d6e10025155391ff81
           persist-credentials: false
+      - name: Trust checkout path for Git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Verify fixed source snapshot
         run: |
           test "$(git rev-parse HEAD)" = '61066675ded83c13a0c6c5d6e10025155391ff81'
