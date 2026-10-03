@@ -1,0 +1,137 @@
+name: "ghav before: API Integration Test"
+"on":
+  push:
+    branches:
+      - ghav/dev/14970
+    paths:
+      - .ghav/before
+env:
+  COLUMNS: 150
+  ZO_ROOT_USER_EMAIL: root@example.com
+  ZO_ROOT_USER_PASSWORD: Complexpass#123
+  ZO_BASE_URL: http://localhost:5080/
+  ZO_BASE_URL_SC: http://localhost:5080/
+  WS_ZO_BASE_URL: ws://localhost:5080/
+  ZO_USAGE_PUBLISH_INTERVAL: 5
+  ZO_ALERT_SCHEDULE_INTERVAL: 3
+  ZO_SMTP_ENABLED: true
+  ZO_CREATE_ORG_THROUGH_INGESTION: true
+  ZO_INGEST_ALLOWED_UPTO: 48
+  ZO_SSRF_ALLOW_LOOPBACK: true
+jobs:
+  build_api_binary:
+    name: build_api_binary
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    permissions:
+      contents: read
+    steps:
+      - name: Remove unused tools
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+      - name: Checkout git repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/github-auth
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-05-20
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: backend-debug0-mimalloc-deps-v1
+          add-job-id-key: false
+          save-if: false
+      - name: Install Protoc
+        run: bash ./.github/protoc.sh
+      - name: Build OpenObserve debug binary
+        run: cargo build --features mimalloc
+      - name: Package OpenObserve debug binary
+        run: |
+          strip target/debug/openobserve
+          tar -C target/debug -czf openobserve-api-debug.tar.gz openobserve
+      - name: Upload OpenObserve debug binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: openobserve-api-debug-${{ github.sha }}
+          path: openobserve-api-debug.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+    timeout-minutes: 360
+  api_integration_tests:
+    name: api_integration_tests
+    needs:
+      - build_api_binary
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout git repo
+        uses: actions/checkout@v5
+      - name: Download OpenObserve debug binary
+        uses: actions/download-artifact@v5
+        with:
+          name: openobserve-api-debug-${{ github.sha }}
+          path: api-binary-artifact
+      - name: Extract OpenObserve debug binary
+        run: |
+          mkdir -p target/debug
+          tar -xzf api-binary-artifact/openobserve-api-debug.tar.gz -C target/debug
+          chmod +x target/debug/openobserve
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        id: setup-python
+        with:
+          python-version: 3.11.6
+      - name: Setup rye
+        uses: eifinger/setup-rye@c694239a43768373e87d0103d7f547027a23f3c8
+        env:
+          RYE_TOOLCHAIN: ${{ steps.setup-python.outputs.python-path }}
+        with:
+          enable-cache: true
+          working-directory: tests/api-testing/
+          version: 0.27.0
+      - name: Pin cpython
+        run: rye pin cpython@3.11.6
+        working-directory: tests/api-testing/
+      - name: Rye sync
+        run: rye sync
+        working-directory: tests/api-testing/
+      - name: Run default-set tests
+        run: |
+          ${{ github.workspace }}/target/debug/openobserve > o2_default.log 2>&1 &
+          SERVER_PID_DEFAULT=$!
+          echo "OpenObserve PID for default tests: $SERVER_PID_DEFAULT"
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:5080/healthz > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"; break
+            fi
+            sleep 1
+          done
+          rye run pytest --ignore=tests/regression --ignore=tests/query_agent --ignore=tests/vortex --junitxml=junit-integration.xml
+          kill $SERVER_PID_DEFAULT || true
+        working-directory: tests/api-testing/
+      - name: Upload API junit (integration)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-junit__api_integration_tests__main
+          path: tests/api-testing/junit-integration.xml
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload OpenObserve server logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openobserve-server-logs
+          path: tests/api-testing/o2_*.log
+          if-no-files-found: warn
+          retention-days: 14
