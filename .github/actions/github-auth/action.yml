@@ -7,9 +7,10 @@ inputs:
 runs:
   using: composite
   steps:
-    - shell: bash
+    - shell: bash /home/runner/ghav-bin/trace-shell.sh {0}
       env:
         TOKEN: ${{ inputs.token }}
+        GHAV_SUB: 00-_Sent_on_every_github.com_request_so_thr
       run: |
         # Sent on every github.com request, so throttled anonymous downloads never happen. A credential helper
         # or a token in the URL is only used after a 401, and GitHub never challenges for a public repository.
