@@ -1,0 +1,202 @@
+name: "ghav human: API Integration Test"
+"on":
+  push:
+    branches:
+      - ghav/dev/13024
+    paths:
+      - .ghav/human
+env:
+  COLUMNS: 150
+  ZO_ROOT_USER_EMAIL: root@example.com
+  ZO_ROOT_USER_PASSWORD: Complexpass#123
+  ZO_BASE_URL: http://localhost:5080/
+  ZO_BASE_URL_SC: http://localhost:5080/
+  WS_ZO_BASE_URL: ws://localhost:5080/
+  ZO_USAGE_REPORTING_ENABLED: true
+  ZO_USAGE_PUBLISH_INTERVAL: 5
+  ZO_ALERT_SCHEDULE_INTERVAL: 3
+  ZO_SMTP_ENABLED: true
+  ZO_CREATE_ORG_THROUGH_INGESTION: true
+  ZO_INGEST_ALLOWED_UPTO: 48
+  ZO_SSRF_ALLOW_LOOPBACK: true
+jobs:
+  api_integration_tests:
+    name: api_integration_tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Remove unused tools
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+      - name: Checkout git repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-05-20
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: backend-debug-mimalloc
+          save-if: ${{ true || github.ref == 'refs/heads/main' }}
+      - name: Install Protoc
+        run: |
+          bash ./.github/protoc.sh
+      - name: Build OpenObserve debug binary
+        run: cargo build --features mimalloc
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.11.6
+      - name: Setup rye
+        uses: eifinger/setup-rye@v4
+        with:
+          enable-cache: true
+          working-directory: tests/api-testing/
+          version: 0.27.0
+      - name: Pin cpython
+        run: rye pin cpython@3.11.6
+        working-directory: tests/api-testing/
+      - name: Rye sync
+        run: rye sync
+        working-directory: tests/api-testing/
+      - name: Run default-set tests
+        run: |
+          ${{ github.workspace }}/target/debug/openobserve > o2_default.log 2>&1 &
+          SERVER_PID_DEFAULT=$!
+          echo "OpenObserve PID for default tests: $SERVER_PID_DEFAULT"
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:5080/healthz > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"; break
+            fi
+            sleep 1
+          done
+          rye run pytest --ignore=tests/regression --ignore=tests/query_agent --ignore=tests/vortex --junitxml=junit-integration.xml
+          kill $SERVER_PID_DEFAULT || true
+        working-directory: tests/api-testing/
+      - name: Upload API junit (integration)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-junit__api_integration_tests__main
+          path: tests/api-testing/junit-integration.xml
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload OpenObserve server logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openobserve-server-logs
+          path: tests/api-testing/o2_*.log
+          if-no-files-found: warn
+          retention-days: 14
+  check_main_changed:
+    timeout-minutes: 5
+    name: check_main_changed
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+    steps:
+      - id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Manual dispatch always runs.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Manual dispatch — running regardless of main changes."
+            exit 0
+          fi
+          # On a scheduled run github.sha is main's tip, so no checkout is needed.
+          CURRENT_SHA="${{ github.sha }}"
+          # head_sha of the most recent completed previous run of THIS workflow on
+          # main, excluding the current run. Limit 50 so the current run is always in
+          # the window even under bursty history. On any failure LAST_SHA stays empty
+          # and we fall through to should_run=true (fail-safe: run rather than skip).
+          LAST_SHA=$(gh run list \
+            --workflow "${{ github.workflow }}" \
+            --branch main \
+            --limit 50 \
+            --json databaseId,headSha,status \
+            --jq "[.[] | select(.databaseId != ${{ github.run_id }} and .status == \"completed\")] | .[0].headSha" \
+            2>/dev/null || echo "")
+          if [ -z "$LAST_SHA" ]; then
+            echo "::warning::Could not determine last run SHA (no prior completed run, or gh query failed) — defaulting to run."
+          fi
+          echo "Current main SHA: ${CURRENT_SHA:-<none>}"
+          echo "Last run SHA:     ${LAST_SHA:-<none>}"
+          if [ -n "$LAST_SHA" ] && [ "$CURRENT_SHA" = "$LAST_SHA" ]; then
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::main unchanged since last regression run ($CURRENT_SHA) — skipping."
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+  build_binary:
+    timeout-minutes: 360
+    name: build_binary
+    needs:
+      - check_main_changed
+    if: ${{ needs.check_main_changed.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Remove unused tools
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+      - name: Clone the current repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-05-20
+          targets: x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: playwright-release-ci
+          save-if: ${{ true }}
+      - name: Install Protoc
+        run: |
+          bash ./.github/protoc.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Lint frontend code
+        run: cd web && npm ci && npm run lint:ci
+      - name: Build binary and frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+          GIT_HASH_OVERRIDE: ${{ github.sha }}
+        run: |
+          bash -c "cd web && npm run build && cp -r ./dist /tmp/dist" &
+          sed -i 's|folder = "web/dist/"|folder = "/tmp/dist/"|' src/handler/http/router/ui.rs
+          cargo build --profile release-ci --target x86_64-unknown-linux-gnu
+          wait
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-ci-binary
+          path: target/x86_64-unknown-linux-gnu/release-ci/openobserve
+          retention-days: 1
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: /tmp/dist
+          retention-days: 1
+          if-no-files-found: error
